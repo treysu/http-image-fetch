@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import os
+import time  # Import for timing
 from datetime import datetime
 from urllib.parse import urlparse
 from io import BytesIO
@@ -34,11 +35,14 @@ def get_daily_folder(base_dir: str, url: str) -> str:
 
 async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes | None:
     """
-    Fetch an image from a URL asynchronously.
+    Fetch an image from a URL asynchronously and log the time taken.
     """
+    start_time = time.time()
     try:
         async with session.get(url, timeout=10) as response:
             if response.status == 200:
+                duration = time.time() - start_time
+                print(f"Image fetched in {duration:.4f} seconds")
                 return await response.read()
             else:
                 print(f"Failed to fetch image: HTTP {response.status}")
@@ -69,8 +73,9 @@ async def process_image(
     img_data: bytes, base_dir: str, url: str, previous_image_gray: Image.Image | None, ssim_threshold: float, disable_ssim: bool
 ) -> Image.Image:
     """
-    Process the fetched image: compare for motion detection and save if necessary.
+    Process the fetched image: compare for motion detection and save if necessary. Log the time taken.
     """
+    start_time = time.time()
     current_image = Image.open(BytesIO(img_data))
     current_image_gray = current_image.convert('L')  # Convert to grayscale for comparison
 
@@ -93,6 +98,9 @@ async def process_image(
         filename = os.path.join(save_dir, f"{timestamp}.jpg")
         current_image.save(filename)
         print(f"Saved: {filename}")
+
+    duration = time.time() - start_time
+    print(f"Image processed in {duration:.4f} seconds")
 
     return current_image_gray
 
