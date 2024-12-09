@@ -1,3 +1,4 @@
+# Additional import for parsing boolean arguments
 import argparse
 import asyncio
 import os
@@ -65,7 +66,7 @@ def compare_ssim(img1: Image.Image, img2: Image.Image) -> float:
 
 
 async def process_image(
-    img_data: bytes, base_dir: str, url: str, previous_image_gray: Image.Image | None, ssim_threshold: float
+    img_data: bytes, base_dir: str, url: str, previous_image_gray: Image.Image | None, ssim_threshold: float, disable_ssim: bool
 ) -> Image.Image:
     """
     Process the fetched image: compare for motion detection and save if necessary.
@@ -74,13 +75,16 @@ async def process_image(
     current_image_gray = current_image.convert('L')  # Convert to grayscale for comparison
 
     save_image = False
-    if previous_image_gray is not None:
-        similarity = compare_ssim(previous_image_gray, current_image_gray)
-        print(f"SSIM Similarity: {similarity:.4f}")
-        if similarity < ssim_threshold:
-            save_image = True
+    if not disable_ssim:
+        if previous_image_gray is not None:
+            similarity = compare_ssim(previous_image_gray, current_image_gray)
+            print(f"SSIM Similarity: {similarity:.4f}")
+            if similarity < ssim_threshold:
+                save_image = True
+        else:
+            save_image = True  # Always save the first frame
     else:
-        save_image = True  # Always save the first frame
+        save_image = True  # Save all images if SSIM is disabled
 
     if save_image:
         # Get the folder for the current date
@@ -99,13 +103,10 @@ async def main():
     """
     parser = argparse.ArgumentParser(description="Fetch images from a URL and save them.")
     parser.add_argument("--url", type=str, help="The URL to fetch images from")
-    parser.add_argument(
-        "--output",
-        type=str,
-        help="Base directory to save images (default: ../images)"
-    )
+    parser.add_argument("--output", type=str, help="Base directory to save images (default: ../images)")
     parser.add_argument("--interval", type=float, help="Interval (seconds) between fetches (default: 10)")
     parser.add_argument("--ssim-threshold", type=float, help="SSIM threshold for saving (default: 0.95)")
+    parser.add_argument("--disable-ssim", action="store_true", help="Disable SSIM comparisons and save all images")
     args = parser.parse_args()
 
     # Use environment variables as fallback
@@ -113,12 +114,14 @@ async def main():
     base_dir = os.path.abspath(args.output or os.getenv("IMAGE_FETCH_OUTPUT", "images"))
     interval = args.interval or float(os.getenv("IMAGE_FETCH_INTERVAL", 10))
     ssim_threshold = args.ssim_threshold or float(os.getenv("IMAGE_FETCH_SSIM_THRESHOLD", 0.95))
-
+    disable_ssim = args.disable_ssim or os.getenv("IMAGE_FETCH_DISABLE_SSIM", "false").lower() in ("1", "true", "yes")
+    
     if not url:
         raise ValueError("A URL must be provided either via --url or IMAGE_FETCH_URL environment variable.")
 
     os.makedirs(base_dir, exist_ok=True)
     print(f"Base directory: {base_dir}")
+    print(f"SSIM comparisons {'disabled' if disable_ssim else 'enabled'}.")
 
     previous_image_gray = None
     async with aiohttp.ClientSession() as session:
@@ -126,7 +129,7 @@ async def main():
             img_data = await fetch_image(session, url)
             if img_data:
                 previous_image_gray = await process_image(
-                    img_data, base_dir, url, previous_image_gray, ssim_threshold
+                    img_data, base_dir, url, previous_image_gray, ssim_threshold, disable_ssim
                 )
             await asyncio.sleep(interval)
 
