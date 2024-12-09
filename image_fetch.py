@@ -98,31 +98,37 @@ async def main():
     Main function to continuously fetch and process images from a URL.
     """
     parser = argparse.ArgumentParser(description="Fetch images from a URL and save them.")
-    parser.add_argument("--url", type=str, required=True, help="The URL to fetch images from")
+    parser.add_argument("--url", type=str, help="The URL to fetch images from")
     parser.add_argument(
         "--output",
         type=str,
-        default="../images",
         help="Base directory to save images (default: ../images)"
     )
-    parser.add_argument("--interval", type=float, default=10, help="Interval (seconds) between fetches (default: 0.1)")
-    parser.add_argument("--ssim-threshold", type=float, default=0.95, help="SSIM threshold for saving (default: 0.95)")
+    parser.add_argument("--interval", type=float, help="Interval (seconds) between fetches (default: 10)")
+    parser.add_argument("--ssim-threshold", type=float, help="SSIM threshold for saving (default: 0.95)")
     args = parser.parse_args()
 
-    # Set up directories
-    base_dir = os.path.abspath(args.output)
+    # Use environment variables as fallback
+    url = args.url or os.getenv("IMAGE_FETCH_URL")
+    base_dir = os.path.abspath(args.output or os.getenv("IMAGE_FETCH_OUTPUT", "images"))
+    interval = args.interval or float(os.getenv("IMAGE_FETCH_INTERVAL", 10))
+    ssim_threshold = args.ssim_threshold or float(os.getenv("IMAGE_FETCH_SSIM_THRESHOLD", 0.95))
+
+    if not url:
+        raise ValueError("A URL must be provided either via --url or IMAGE_FETCH_URL environment variable.")
+
     os.makedirs(base_dir, exist_ok=True)
     print(f"Base directory: {base_dir}")
 
     previous_image_gray = None
     async with aiohttp.ClientSession() as session:
         while True:
-            img_data = await fetch_image(session, args.url)
+            img_data = await fetch_image(session, url)
             if img_data:
                 previous_image_gray = await process_image(
-                    img_data, base_dir, args.url, previous_image_gray, args.ssim_threshold
+                    img_data, base_dir, url, previous_image_gray, ssim_threshold
                 )
-            await asyncio.sleep(args.interval)
+            await asyncio.sleep(interval)
 
 
 if __name__ == "__main__":
