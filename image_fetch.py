@@ -104,8 +104,8 @@ async def main():
     url_list = [u.strip() for u in urls.split(",")]
 
     base_dir = os.path.abspath(args.output or os.getenv("IMAGE_FETCH_OUTPUT", "images"))
-    interval = args.interval
-    ssim_threshold = args.ssim_threshold
+    interval = args.interval or float(os.getenv("IMAGE_FETCH_INTERVAL", 10))
+    ssim_threshold = args.ssim_threshold or float(os.getenv("IMAGE_FETCH_SSIM_THRESHOLD", 0.95))
     disable_ssim = args.disable_ssim or os.getenv("IMAGE_FETCH_DISABLE_SSIM", "false").lower() in ("1", "true", "yes")
 
     os.makedirs(base_dir, exist_ok=True)
