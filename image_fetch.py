@@ -93,8 +93,8 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", type=str, help="Comma-separated list of URLs to fetch from")
     parser.add_argument("--output", type=str, default="images")
-    parser.add_argument("--interval", type=float, default=10)
-    parser.add_argument("--ssim-threshold", type=float, default=0.95)
+    parser.add_argument("--interval", type=float)
+    parser.add_argument("--ssim-threshold", type=float)
     parser.add_argument("--disable-ssim", action="store_true")
     args = parser.parse_args()
 
