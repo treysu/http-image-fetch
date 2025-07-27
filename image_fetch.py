@@ -1,8 +1,8 @@
-# Additional import for parsing boolean arguments
 import argparse
 import asyncio
 import os
-import time  # Import for timing
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import BytesIO
 from urllib.parse import urlparse
@@ -12,167 +12,109 @@ import numpy as np
 from PIL import Image
 from skimage.metrics import structural_similarity as ssim
 
+executor = ThreadPoolExecutor()
 
 def get_folder_name(url: str) -> str:
-    """
-    Generate a safe folder name based on the IP/port or domain.
-    """
     parsed_url = urlparse(url)
-    folder_name = parsed_url.netloc.replace('.', '_').replace(':', '-')
-    return folder_name
-
+    return parsed_url.netloc.replace('.', '_').replace(':', '-')
 
 def get_daily_folder(base_dir: str, url: str) -> str:
-    """
-    Create a directory structure: base_dir/<url_folder>/<YYYY-MM-DD>.
-    """
     url_folder = get_folder_name(url)
     date_folder = datetime.now().strftime("%Y-%m-%d")
     full_path = os.path.join(base_dir, date_folder, url_folder)
     os.makedirs(full_path, exist_ok=True)
     return full_path
 
-
 async def fetch_image(session: aiohttp.ClientSession, url: str) -> bytes | None:
-    """
-    Fetch an image from a URL asynchronously and log the time taken.
-    """
-    start_time = time.time()
     try:
         async with session.get(url, timeout=10) as response:
             if response.status == 200:
-                duration = time.time() - start_time
-                print(f"Image fetched in {duration:.4f} seconds")
                 return await response.read()
             else:
-                print(f"Failed to fetch image: HTTP {response.status}")
-    except aiohttp.ClientConnectorError as e:
-        print(f"Connection error for {url}: {e}")
-    except asyncio.TimeoutError:
-        print(f"Connection to {url} timed out.")
+                print(f"[{url}] Failed to fetch: HTTP {response.status}")
     except Exception as e:
-        print(f"Unexpected error fetching {url}: {e}")
+        print(f"[{url}] Fetch error: {e}")
     return None
 
+def downscale(image: Image.Image, size=(320, 240)) -> Image.Image:
+    return image.resize(size, Image.BILINEAR)
 
 def compare_ssim(img1: Image.Image, img2: Image.Image) -> float:
-    """
-    Compare two images using Structural Similarity Index (SSIM).
-    """
-    start_time = time.time()
     try:
         img1_array = np.array(img1)
         img2_array = np.array(img2)
         score, _ = ssim(img1_array, img2_array, full=True)
-        duration = time.time() - start_time
-        print(f"SSIM comparison completed in {duration:.4f} seconds")
         return score
-    except ValueError as e:
-        print(f"Error comparing images: {e}")
-        return -1.0  # Default score for comparison failure
+    except Exception as e:
+        print(f"SSIM error: {e}")
+        return -1.0
 
+async def to_grayscale_image(img_data: bytes) -> Image.Image:
+    loop = asyncio.get_event_loop()
+    def load_and_convert():
+        img = Image.open(BytesIO(img_data))
+        return img.convert('L')
+    return await loop.run_in_executor(executor, load_and_convert)
 
-async def process_image(
-    img_data: bytes, base_dir: str, url: str, previous_image_gray: Image.Image | None, ssim_threshold: float, disable_ssim: bool
-) -> Image.Image:
-    """
-    Process the fetched image: compare for motion detection, save if necessary, and log timing details.
-    """
-    overall_start_time = time.time()
+async def save_image(image: Image.Image, base_dir: str, url: str):
+    loop = asyncio.get_event_loop()
+    def _save():
+        folder = get_daily_folder(base_dir, url)
+        timestamp = datetime.now().strftime("%H%M%S_%f")
+        filename = os.path.join(folder, f"{timestamp}.jpg")
+        image.save(filename)
+        print(f"[{url}] Image saved: {filename}")
+    await loop.run_in_executor(executor, _save)
 
-    # Convert image to PIL format
-    start_time = time.time()
-    current_image = Image.open(BytesIO(img_data))
-    duration = time.time() - start_time
-    print(f"Image loaded in {duration:.4f} seconds")
+async def handle_stream(url: str, session: aiohttp.ClientSession, base_dir: str, interval: float, ssim_threshold: float, disable_ssim: bool):
+    print(f"Started stream: {url}")
+    previous_image = None
 
-    # Convert to grayscale
-    start_time = time.time()
-    current_image_gray = current_image.convert('L')
-    duration = time.time() - start_time
-    print(f"Grayscale conversion completed in {duration:.4f} seconds")
+    while True:
+        start = time.time()
+        img_data = await fetch_image(session, url)
+        if img_data:
+            image = await to_grayscale_image(img_data)
+            save = False
+            if disable_ssim or previous_image is None:
+                save = True
+            else:
+                sim = compare_ssim(downscale(previous_image), downscale(image))
+                if sim < ssim_threshold:
+                    save = True
+                print(f"[{url}] SSIM: {sim:.4f}")
 
-    # Determine if the image should be saved
-    save_image = False
-    if not disable_ssim:
-        if previous_image_gray is not None:
-            similarity = compare_ssim(previous_image_gray, current_image_gray)
-            print(f"SSIM Similarity: {similarity:.4f}")
-            if similarity < ssim_threshold:
-                save_image = True
-        else:
-            save_image = True  # Always save the first frame
-    else:
-        save_image = True  # Save all images if SSIM is disabled
-
-    # Save the image if necessary
-    if save_image:
-        save_start_time = time.time()
-        save_dir = get_daily_folder(base_dir, url)
-        timestamp = datetime.now().strftime("%H%M%S_%f")  # Only time for filename
-        filename = os.path.join(save_dir, f"{timestamp}.jpg")
-        current_image.save(filename)
-        save_duration = time.time() - save_start_time
-        print(f"Image saved in {save_duration:.4f} seconds to {filename}")
-
-    overall_duration = time.time() - overall_start_time
-    print(f"Image processing completed in {overall_duration:.4f} seconds")
-
-    return current_image_gray
-
+            if save:
+                await save_image(image, base_dir, url)
+            previous_image = image
+        await asyncio.sleep(interval - (time.time() - start) if interval > 0 else 0)
 
 async def main():
-    """
-    Main function to continuously fetch and process images from a URL.
-    """
-    parser = argparse.ArgumentParser(description="Fetch images from a URL and save them.")
-    parser.add_argument("--url", type=str, help="The URL to fetch images from")
-    parser.add_argument("--output", type=str, help="Base directory to save images (default: ../images)")
-    parser.add_argument("--interval", type=float, help="Interval (seconds) between fetches (default: 10)")
-    parser.add_argument("--ssim-threshold", type=float, help="SSIM threshold for saving (default: 0.95)")
-    parser.add_argument("--disable-ssim", action="store_true", help="Disable SSIM comparisons and save all images")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--url", type=str, help="Comma-separated list of URLs to fetch from")
+    parser.add_argument("--output", type=str, default="images")
+    parser.add_argument("--interval", type=float, default=10)
+    parser.add_argument("--ssim-threshold", type=float, default=0.95)
+    parser.add_argument("--disable-ssim", action="store_true")
     args = parser.parse_args()
 
-    # Use environment variables as fallback
-    url = args.url or os.getenv("IMAGE_FETCH_URL")
+    urls = args.url or os.getenv("IMAGE_FETCH_URLS")
+    if not urls:
+        raise ValueError("Provide URLs via --url or IMAGE_FETCH_URLS")
+    url_list = [u.strip() for u in urls.split(",")]
+
     base_dir = os.path.abspath(args.output or os.getenv("IMAGE_FETCH_OUTPUT", "images"))
-    interval = args.interval or float(os.getenv("IMAGE_FETCH_INTERVAL", 10))
-    ssim_threshold = args.ssim_threshold or float(os.getenv("IMAGE_FETCH_SSIM_THRESHOLD", 0.95))
+    interval = args.interval
+    ssim_threshold = args.ssim_threshold
     disable_ssim = args.disable_ssim or os.getenv("IMAGE_FETCH_DISABLE_SSIM", "false").lower() in ("1", "true", "yes")
 
-    if not url:
-        raise ValueError("A URL must be provided either via --url or IMAGE_FETCH_URL environment variable.")
-
     os.makedirs(base_dir, exist_ok=True)
-    print(f"Base directory: {base_dir}")
-    print(f"SSIM comparisons {'disabled' if disable_ssim else 'enabled'}.")
-
-    previous_image_gray = None
-    async with aiohttp.ClientSession() as session:
-        while True:
-            iteration_start_time = time.time()  # Start of the iteration
-
-            fetch_start_time = time.time()
-            img_data = await fetch_image(session, url)
-            fetch_duration = time.time() - fetch_start_time
-            print(f"Fetch operation took {fetch_duration:.4f} seconds")
-
-            if img_data:
-                process_start_time = time.time()
-                previous_image_gray = await process_image(
-                    img_data, base_dir, url, previous_image_gray, ssim_threshold, disable_ssim
-                )
-                process_duration = time.time() - process_start_time
-                print(f"Processing operation took {process_duration:.4f} seconds")
-
-            sleep_start_time = time.time()
-            await asyncio.sleep(interval)  # Sleep for the specified interval
-            sleep_duration = time.time() - sleep_start_time
-
-            iteration_duration = time.time() - iteration_start_time
-            print(f"Iteration completed in {iteration_duration:.4f} seconds (including {sleep_duration:.4f} seconds of sleep)")
-
-
+    connector = aiohttp.TCPConnector(limit=10)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        await asyncio.gather(*[
+            handle_stream(url, session, base_dir, interval, ssim_threshold, disable_ssim)
+            for url in url_list
+        ])
 
 if __name__ == "__main__":
     asyncio.run(main())
