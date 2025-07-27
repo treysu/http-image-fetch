@@ -49,12 +49,12 @@ def compare_ssim(img1: Image.Image, img2: Image.Image) -> float:
         print(f"SSIM error: {e}")
         return -1.0
 
-async def to_grayscale_image(img_data: bytes) -> Image.Image:
+async def decode_image(img_data: bytes) -> tuple[Image.Image, Image.Image]:
     loop = asyncio.get_event_loop()
-    def load_and_convert():
+    def load_both():
         img = Image.open(BytesIO(img_data))
-        return img.convert('L')
-    return await loop.run_in_executor(executor, load_and_convert)
+        return img, img.convert('L')  # color and grayscale
+    return await loop.run_in_executor(executor, load_both)
 
 async def save_image(image: Image.Image, base_dir: str, url: str):
     loop = asyncio.get_event_loop()
@@ -74,19 +74,19 @@ async def handle_stream(url: str, session: aiohttp.ClientSession, base_dir: str,
         start = time.time()
         img_data = await fetch_image(session, url)
         if img_data:
-            image = await to_grayscale_image(img_data)
+            color_image, gray_image = await decode_image(img_data)
             save = False
             if disable_ssim or previous_image is None:
                 save = True
             else:
-                sim = compare_ssim(downscale(previous_image), downscale(image))
+                sim = compare_ssim(downscale(previous_image), downscale(gray_image))
                 if sim < ssim_threshold:
                     save = True
                 print(f"[{url}] SSIM: {sim:.4f}")
 
             if save:
-                await save_image(image, base_dir, url)
-            previous_image = image
+                await save_image(color_image, base_dir, url)  # Save full-color image
+            previous_image = gray_image  # Still use grayscale for SSIM comparison
         await asyncio.sleep(interval - (time.time() - start) if interval > 0 else 0)
 
 async def main():
