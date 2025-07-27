@@ -108,6 +108,16 @@ async def main():
     ssim_threshold = args.ssim_threshold or float(os.getenv("IMAGE_FETCH_SSIM_THRESHOLD", 0.95))
     disable_ssim = args.disable_ssim or os.getenv("IMAGE_FETCH_DISABLE_SSIM", "false").lower() in ("1", "true", "yes")
 
+    print("=== Configuration ===")
+    print(f"Base Directory     : {base_dir}")
+    print(f"Interval (seconds) : {interval}")
+    print(f"SSIM Threshold     : {ssim_threshold}")
+    print(f"SSIM Disabled      : {disable_ssim}")
+    print(f"Camera URLs        :")
+    for url in url_list:
+        print(f"  - {url}")
+    print("======================")
+
     os.makedirs(base_dir, exist_ok=True)
     connector = aiohttp.TCPConnector(limit=10)
     async with aiohttp.ClientSession(connector=connector) as session:
