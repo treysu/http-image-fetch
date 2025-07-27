@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import os
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import BytesIO
@@ -11,6 +12,11 @@ import aiohttp
 import numpy as np
 from PIL import Image
 from skimage.metrics import structural_similarity as ssim
+
+# Tracks {url: (next_retry_time, current_backoff_seconds)}
+backoff_tracker = defaultdict(lambda: (0, 0))  # (next_allowed_time, backoff_seconds)
+
+
 
 executor = ThreadPoolExecutor()
 
@@ -66,12 +72,19 @@ async def save_image(image: Image.Image, base_dir: str, url: str):
         print(f"[{url}] Image saved: {filename}")
     await loop.run_in_executor(executor, _save)
 
-async def handle_stream(url: str, session: aiohttp.ClientSession, base_dir: str, interval: float, ssim_threshold: float, disable_ssim: bool):
+async def handle_stream(url, session, base_dir, interval, ssim_threshold, disable_ssim):
     print(f"Started stream: {url}")
     previous_image = None
+    global backoff_tracker
 
     while True:
-        start = time.time()
+        now = time.time()
+        next_time, backoff = backoff_tracker[url]
+
+        if now < next_time:
+            await asyncio.sleep(1)  # wait 1s and check again
+            continue
+
         img_data = await fetch_image(session, url)
         if img_data:
             color_image, gray_image = await decode_image(img_data)
@@ -85,9 +98,18 @@ async def handle_stream(url: str, session: aiohttp.ClientSession, base_dir: str,
                 print(f"[{url}] SSIM: {sim:.4f}")
 
             if save:
-                await save_image(color_image, base_dir, url)  # Save full-color image
-            previous_image = gray_image  # Still use grayscale for SSIM comparison
-        await asyncio.sleep(interval - (time.time() - start) if interval > 0 else 0)
+                await save_image(color_image, base_dir, url)
+
+            previous_image = gray_image
+            backoff_tracker[url] = (0, 0)  # reset backoff on success
+
+            await asyncio.sleep(interval)
+        else:
+            # Increase backoff on failure
+            _, prev_backoff = backoff_tracker[url]
+            new_backoff = min(prev_backoff * 2 + 5, 120)  # start small, cap at 2 min
+            backoff_tracker[url] = (time.time() + new_backoff, new_backoff)
+            print(f"[{url}] Backing off for {new_backoff:.0f}s due to error")
 
 async def main():
     parser = argparse.ArgumentParser()
